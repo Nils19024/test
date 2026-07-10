@@ -1,0 +1,42 @@
+{
+  "name": "quoridor-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server/server.ts",
+    "test": "vitest run",
+    "train": "tsx src/ml/train.ts",
+    "diagnose:distill": "tsx src/ml/policyDistillationCheck.ts",
+    "benchmark": "tsx src/benchmark/matchups.ts",
+    "benchmark:strength": "tsx src/benchmark/strengthGate.ts",
+    "benchmark:elite": "tsx src/benchmark/eliteGate.ts",
+    "benchmark:prefix-stress": "tsx src/benchmark/prefixStress.ts",
+    "benchmark:prefix-details": "tsx src/benchmark/prefixStressDetails.ts",
+    "benchmark:prefix-audit": "tsx src/benchmark/prefixDecisionAudit.ts",
+    "benchmark:mcts-probe": "tsx src/benchmark/mctsProbe.ts",
+    "promote:candidate": "tsx src/ml/promoteCandidate.ts",
+    "sweep:prefix-stress": "tsx src/ml/prefixStressSweep.ts",
+    "export-model": "tsx src/ml/exportModel.ts",
+    "build": "tsc && vite build",
+    "install:native": "npm install @tensorflow/tfjs-node@^4.22.0 --save-optional",
+    "install:gpu": "npm install @tensorflow/tfjs-node-gpu@^4.22.0 --save-optional",
+    "install:cuda11": "conda create -p ./.conda/tfjs-cuda -y -c conda-forge cudatoolkit=11.2 cudnn=8"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "express": "^4.19.2",
+    "vite": "^5.4.11"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  },
+  "optionalDependencies": {
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@tensorflow/tfjs-node-gpu": "^4.22.0"
+  }
+}

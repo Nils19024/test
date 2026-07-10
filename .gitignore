@@ -1,0 +1,14 @@
+node_modules/
+.conda/
+dist/
+dist-types/
+models/
+public/models/
+data/
+diagnostics/
+training-backups/
+public/replays/
+diagnostics-*.json
+.vite/
+coverage/
+*.log
