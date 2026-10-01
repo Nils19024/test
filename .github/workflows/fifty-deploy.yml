@@ -1,0 +1,29 @@
+name: Fifty quiz deployment
+on:
+  push:
+    branches: [fifty-usa-quiz]
+    paths: ['fifty-quiz/**', '.github/workflows/fifty-deploy.yml']
+permissions:
+  contents: write
+concurrency:
+  group: fifty-quiz-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check public hosting endpoints
+        run: |
+          python3 - <<'PY'
+          import urllib.request, re
+          urls = ['https://nano-handsome-understanding--nilsschmidt3396.replit.app', 'https://raw.githack.com/', 'https://rawcdn.githack.com/Nils19024/test/f075c95a4ac1fe83a7bcc561784d8af4f7c420c5/index.html']
+          for url in urls:
+              try:
+                  r = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'}), timeout=40)
+                  text = r.read().decode('utf-8', errors='replace')
+                  print('CHECK', url, r.status, r.headers.get('Content-Type'), 'title', re.findall(r'<title[^>]*>(.*?)</title>', text, re.S), 'length', len(text), 'preview', text[:350])
+              except Exception as e:
+                  print('CHECK FAILED', url, str(e))
+          PY
