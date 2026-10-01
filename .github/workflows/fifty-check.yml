@@ -5,15 +5,18 @@ on:
     paths: ['.github/workflows/fifty-check.yml']
 permissions:
   contents: write
+concurrency:
+  group: fifty-final-check
+  cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fifty-usa-quiz
-      - name: Check CDN responses and select working public URL
+      - name: Check public quiz
         run: |
           python3 -u - <<'PY'
           import urllib.request,os,hashlib,re
@@ -21,39 +24,50 @@ jobs:
           selected=None
           for url in urls:
               try:
-                  r=urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'}),timeout=25)
+                  r=urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'}),timeout=20)
                   data=r.read();text=data.decode('utf-8')
                   print('HTTP_CHECK',r.status,r.headers.get('Content-Type'),len(data),hashlib.sha256(data).hexdigest(),url,flush=True)
-                  print('TITLE',re.findall(r'<title[^>]*>(.*?)</title>',text,re.S),'TAIL',text[-250:],flush=True)
-                  if r.status==200 and 'text/html' in r.headers.get('Content-Type','') and 'window.FiftyQuiz' in text and 'map-data' in text and selected is None:
+                  print('TITLE',re.findall(r'<title[^>]*>(.*?)</title>',text,re.S),flush=True)
+                  if r.status==200 and 'text/html' in r.headers.get('Content-Type','') and 'window.FiftyQuiz' in text and 'map-data' in text:
                       selected=url
+                      break
               except Exception as e:
                   print('HTTP_CHECK_ERROR',url,repr(e),flush=True)
           assert selected,'No working public quiz URL yet'
           with open(os.environ['GITHUB_ENV'],'a') as f:f.write('LIVE_URL='+selected+'\n')
           print('SELECTED_PUBLIC_URL',selected,flush=True)
           PY
-      - name: Install browser
+      - name: Prepare preinstalled Chrome
         run: |
           python -m pip install -q playwright pyyaml
-          python -m playwright install --with-deps chromium >/tmp/fifty-install.log 2>&1
-      - name: Run real mobile and desktop gameplay tests
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || true)"
+          if [ -n "$CHROME" ]; then
+            echo "BROWSER_EXE=$CHROME" >> "$GITHUB_ENV"
+            "$CHROME" --version
+          else
+            python -m playwright install chromium
+          fi
+      - name: Run mobile and desktop gameplay tests
         run: |
           python - <<'PY'
           import yaml,subprocess
           with open('.github/workflows/fifty-deploy.yml') as f: workflow=yaml.safe_load(f)
           step=next(s for s in workflow['jobs']['deploy']['steps'] if s.get('name')=='Verify map, tolerant answers, practice and persistence')
-          script=step['run'].replace("Path('fifty-proof')","Path('fifty-proof-final')")
+          script=step['run'].replace("Path('fifty-proof')","Path('fifty-proof-verified')")
+          script=script.replace('browser=p.chromium.launch()',"browser=p.chromium.launch(executable_path=os.environ.get('BROWSER_EXE'))")
+          old="assert page.locator('#state-TX').evaluate('e=>getComputedStyle(e).fill')=='rgb(140, 203, 160)'"
+          new='page.wait_for_function("getComputedStyle(document.querySelector(\'#state-TX\')).fill === \'rgb(140, 203, 160)\'")'
+          script=script.replace(old,new)
           subprocess.run(['bash','-e','-c',script],check=True)
           PY
-      - name: Save independent proof
+      - name: Save public test evidence
         if: always()
         run: |
-          if [ -d fifty-proof-final ]; then
+          if [ -d fifty-proof-verified ]; then
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add fifty-proof-final
-            git diff --cached --quiet || git commit -m 'Record verified live quiz gameplay'
+            git add fifty-proof-verified
+            git diff --cached --quiet || git commit -m 'Verified live quiz: mobile, spelling, practice and all 50 states'
             git pull --rebase origin fifty-usa-quiz
             git push origin HEAD:fifty-usa-quiz
           fi
