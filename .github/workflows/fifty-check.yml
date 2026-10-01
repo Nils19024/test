@@ -11,32 +11,11 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fifty-usa-quiz
-      - name: Check public quiz
-        run: |
-          python3 -u - <<'PY'
-          import urllib.request,os,hashlib,re
-          urls=['https://rawcdn.githack.com/Nils19024/test/3d2c63e71ddb710e16c436aa4ce6e3c09b199a8b/fifty-quiz/index.html','https://raw.githack.com/Nils19024/test/3d2c63e71ddb710e16c436aa4ce6e3c09b199a8b/fifty-quiz/index.html','https://raw.githack.com/Nils19024/test/fifty-usa-quiz/fifty-quiz/index.html']
-          selected=None
-          for url in urls:
-              try:
-                  r=urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'}),timeout=20)
-                  data=r.read();text=data.decode('utf-8')
-                  print('HTTP_CHECK',r.status,r.headers.get('Content-Type'),len(data),hashlib.sha256(data).hexdigest(),url,flush=True)
-                  print('TITLE',re.findall(r'<title[^>]*>(.*?)</title>',text,re.S),flush=True)
-                  if r.status==200 and 'text/html' in r.headers.get('Content-Type','') and 'window.FiftyQuiz' in text and 'map-data' in text:
-                      selected=url
-                      break
-              except Exception as e:
-                  print('HTTP_CHECK_ERROR',url,repr(e),flush=True)
-          assert selected,'No working public quiz URL yet'
-          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('LIVE_URL='+selected+'\n')
-          print('SELECTED_PUBLIC_URL',selected,flush=True)
-          PY
       - name: Prepare preinstalled Chrome
         run: |
           python -m pip install -q playwright pyyaml
@@ -47,6 +26,46 @@ jobs:
           else
             python -m playwright install chromium
           fi
+      - name: Select a genuinely working public browser URL
+        run: |
+          python -u - <<'PY'
+          import os,json
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          root='Nils19024/test/3d2c63e71ddb710e16c436aa4ce6e3c09b199a8b/fifty-quiz/index.html'
+          urls=['https://rawcdn.githack.com/'+root,'https://raw.githack.com/'+root,'https://raw.githack.com/Nils19024/test/fifty-usa-quiz/fifty-quiz/index.html','https://htmlpreview.github.io/?https://raw.githubusercontent.com/'+root]
+          out=Path('fifty-diagnostics');out.mkdir(exist_ok=True)
+          records=[];selected=None
+          with sync_playwright() as p:
+              b=p.chromium.launch(executable_path=os.environ.get('BROWSER_EXE'))
+              for i,url in enumerate(urls):
+                  page=b.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+                  errors=[]
+                  page.on('pageerror',lambda e:errors.append(str(e)))
+                  page.on('console',lambda e:errors.append(e.text) if e.type=='error' else None)
+                  record={'url':url}
+                  try:
+                      r=page.goto(url,wait_until='domcontentloaded',timeout=30000)
+                      page.wait_for_timeout(1500)
+                      record.update(status=r.status,title=page.title(),headers=r.headers,text=page.locator('body').inner_text()[:2500])
+                      try:page.wait_for_function('window.FiftyQuiz && document.querySelectorAll("#state-paths path").length === 50',timeout=7000)
+                      except Exception as e:record['initialization_error']=str(e)[:500]
+                      record['shapes']=page.locator('#state-paths path').count()
+                      record['helper']=page.evaluate('typeof window.FiftyQuiz')
+                      record['errors']=errors
+                      page.screenshot(path=str(out/f'host-{i}.png'),full_page=True)
+                      if record['shapes']==50 and record['helper']=='object': selected=url
+                  except Exception as e:record['failure']=repr(e)
+                  records.append(record)
+                  print('BROWSER_DIAGNOSTIC',json.dumps(record,ensure_ascii=False),flush=True)
+                  page.close()
+                  if selected:break
+              b.close()
+          (out/'hosts.json').write_text(json.dumps(records,indent=2,ensure_ascii=False))
+          assert selected,'No host executed the complete quiz yet; inspect diagnostics'
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('LIVE_URL='+selected+'\n')
+          print('WORKING_BROWSER_URL',selected,flush=True)
+          PY
       - name: Run mobile and desktop gameplay tests
         run: |
           python - <<'PY'
@@ -63,11 +82,10 @@ jobs:
       - name: Save public test evidence
         if: always()
         run: |
-          if [ -d fifty-proof-verified ]; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add fifty-proof-verified
-            git diff --cached --quiet || git commit -m 'Verified live quiz: mobile, spelling, practice and all 50 states'
-            git pull --rebase origin fifty-usa-quiz
-            git push origin HEAD:fifty-usa-quiz
-          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          [ ! -d fifty-diagnostics ] || git add fifty-diagnostics
+          [ ! -d fifty-proof-verified ] || git add fifty-proof-verified
+          git diff --cached --quiet || git commit -m 'Record public quiz browser diagnostics and gameplay evidence'
+          git pull --rebase origin fifty-usa-quiz
+          git push origin HEAD:fifty-usa-quiz
