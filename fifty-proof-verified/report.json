@@ -1,0 +1,15 @@
+{
+  "url": "https://htmlpreview.github.io/?https://raw.githubusercontent.com/Nils19024/test/3d2c63e71ddb710e16c436aa4ce6e3c09b199a8b/fifty-quiz/index.html",
+  "checked_at": "2026-10-01T18:51:12.440494+00:00",
+  "checks": [
+    "Public URL opens without login; all 50 state shapes render",
+    "Multiple spelling errors accepted; wrong states and North/South swaps rejected",
+    "Real mobile tap on Texas; typo answer accepted; state turns green",
+    "Personal practice contains only saved state and has separate progress",
+    "Practice list and both scores persist after reload",
+    "Northeast zoom and Massachusetts spelling work",
+    "Complete desktop round: 50 correct answers and 50 green states",
+    "No JavaScript errors during mobile gameplay"
+  ],
+  "status": "success"
+}
