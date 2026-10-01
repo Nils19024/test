@@ -1,64 +1,141 @@
-name: Fifty live browser verification
+name: Publish and verify fifty quiz
 on:
   push:
     branches: [fifty-usa-quiz]
-    paths: ['fifty-quiz/**', '.github/workflows/fifty-deploy.yml']
+    paths: ['fifty-src/**', '.github/workflows/fifty-deploy.yml']
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: fifty-quiz-deploy
   cancel-in-progress: false
 jobs:
-  verify:
+  deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Install browser tester
+      - uses: actions/checkout@v4
+        with:
+          ref: fifty-usa-quiz
+      - name: Restore exact original HTML and verify checksum
         run: |
-          python -m pip install playwright
-          python -m playwright install --with-deps chromium
-      - name: Open and inspect published mobile quiz
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, lzma, hashlib
+          parts=[Path(f'fifty-src/part{i}.b64').read_text().strip() for i in range(1,5)]
+          data=lzma.decompress(base64.b64decode(''.join(parts),validate=True))
+          checksum=hashlib.sha256(data).hexdigest()
+          assert checksum=='c04e4b8846f5fb7b74ea24347ee2cd93d752d310a1fb269a94902ba9cd9afeab',checksum
+          Path('fifty-quiz').mkdir(exist_ok=True)
+          Path('fifty-quiz/index.html').write_bytes(data)
+          print('ORIGINAL_HTML_VERIFIED',len(data),checksum)
+          PY
+      - name: Publish immutable static version
         run: |
-          mkdir -p proof
-          python - <<'PY'
-          import json, re
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add fifty-quiz/index.html
+          git diff --cached --quiet || git commit -m 'Publish original fifty quiz, standalone static HTML'
+          git push origin HEAD:fifty-usa-quiz
+          echo "LIVE_URL=https://rawcdn.githack.com/Nils19024/test/$(git rev-parse HEAD)/fifty-quiz/index.html" >> "$GITHUB_ENV"
+      - name: Verify public HTML without authentication
+        run: |
+          python3 - <<'PY'
+          import urllib.request, os, time, hashlib
+          url=os.environ['LIVE_URL']
+          for attempt in range(12):
+              try:
+                  r=urllib.request.urlopen(url,timeout=35)
+                  data=r.read()
+                  assert r.status==200
+                  assert 'text/html' in r.headers.get('Content-Type','')
+                  assert hashlib.sha256(data).hexdigest()=='c04e4b8846f5fb7b74ea24347ee2cd93d752d310a1fb269a94902ba9cd9afeab'
+                  print('PUBLIC_URL_VERIFIED',url,'HTTP',r.status,'BYTES',len(data))
+                  break
+              except Exception as e:
+                  print('Waiting for CDN',attempt+1,str(e))
+                  if attempt==11: raise
+                  time.sleep(10)
+          PY
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install -q playwright
+          python -m playwright install --with-deps chromium > /tmp/fifty-browser-install.log 2>&1
+      - name: Verify map, tolerant answers, practice and persistence
+        run: |
+          python3 - <<'PY'
+          import os, json, datetime
+          from pathlib import Path
           from playwright.sync_api import sync_playwright
-          url='https://nano-handsome-understanding--nilsschmidt3396.replit.app'
+          out=Path('fifty-proof');out.mkdir(exist_ok=True)
+          report={'url':os.environ['LIVE_URL'],'checked_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'checks':[]}
+          def passed(name):
+              report['checks'].append(name)
+              print('PASS',name,flush=True)
           with sync_playwright() as p:
               browser=p.chromium.launch()
               context=browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True,device_scale_factor=2)
-              page=context.new_page()
-              errors=[]
+              page=context.new_page();errors=[]
               page.on('pageerror',lambda e: errors.append(str(e)))
-              response=page.goto(url,wait_until='networkidle',timeout=90000)
-              page.wait_for_timeout(3000)
-              print('LIVE_STATUS',response.status,'URL',page.url,'TITLE',page.title())
-              print('MOBILE_TEXT',page.locator('body').inner_text()[:12000])
-              print('BUTTONS',json.dumps(page.locator('button').evaluate_all('(es)=>es.map(e=>({text:e.innerText,id:e.id,test:e.dataset.testid,aria:e.getAttribute("aria-label")}))'),ensure_ascii=False))
-              print('INPUTS',page.locator('input').evaluate_all('(es)=>es.map(e=>({id:e.id,placeholder:e.placeholder,test:e.dataset.testid}))'))
-              print('PATH_COUNT',page.locator('path').count())
-              print('PATH_ATTRS',json.dumps(page.locator('path').evaluate_all('(es)=>es.filter(e=>(e.getAttribute("d")||"").length>100).slice(0,55).map(e=>({attrs:[...e.attributes].filter(a=>a.name!=="d").map(a=>[a.name,a.value]),box:(()=>{const b=e.getBoundingClientRect();return {x:b.x,y:b.y,w:b.width,h:b.height}})()}))'),ensure_ascii=False))
-              page.screenshot(path='proof/mobile-initial.png',full_page=True)
-              random=page.get_by_role('button',name=re.compile('Zufall|Zufäll',re.I))
-              if random.count():
-                  random.first.click()
-                  page.wait_for_timeout(700)
-                  print('AFTER_RANDOM',page.locator('body').inner_text()[:8000])
-                  print('AFTER_RANDOM_INPUTS',page.locator('input').evaluate_all('(es)=>es.map(e=>({id:e.id,placeholder:e.placeholder,test:e.dataset.testid}))'))
-                  page.screenshot(path='proof/mobile-selected.png',full_page=True)
-              print('PAGE_ERRORS',errors)
-              assert response.status==200
-              assert page.locator('path').count()>=50
-              assert not errors
-              assert "This app isn't live yet" not in page.locator('body').inner_text()
+              r=page.goto(report['url'],wait_until='networkidle',timeout=90000)
+              page.wait_for_function('window.FiftyQuiz && document.querySelectorAll("#state-paths path").length === 50')
+              assert r.status==200
+              assert page.locator('#state-paths path').count()==50
+              passed('Public URL opens without login; all 50 state shapes render')
+              page.screenshot(path=str(out/'mobile.png'),full_page=True)
+              for word,sid in [('Masaschussets','MA'),('Penselwänia','PA'),('Konetikut','CT'),('Nju Hämpschir','NH')]:
+                  assert page.evaluate('([word,id])=>FiftyQuiz.evaluateGuess(word,id).ok',[word,sid]),(word,sid)
+              assert not page.evaluate('FiftyQuiz.evaluateGuess("California","TX").ok')
+              assert not page.evaluate('FiftyQuiz.evaluateGuess("South Dakota","ND").ok')
+              passed('Multiple spelling errors accepted; wrong states and North/South swaps rejected')
+              page.locator('#state-TX').tap()
+              page.locator('#guess').fill('Teksass')
+              page.locator('#guess').press('Enter')
+              assert 'solved' in page.locator('#state-TX').get_attribute('class')
+              assert page.locator('#progress-number').inner_text()=='1 / 50'
+              assert page.locator('#state-TX').evaluate('e=>getComputedStyle(e).fill')=='rgb(140, 203, 160)'
+              passed('Real mobile tap on Texas; typo answer accepted; state turns green')
+              page.locator('#bookmark').click()
+              assert page.evaluate('FiftyQuiz.snapshot().saved.includes("TX")')
+              page.locator('#mode-practice').click()
+              assert page.locator('#progress-number').inner_text()=='0 / 1'
+              page.locator('#state-TX').tap()
+              page.locator('#guess').fill('Texas');page.locator('#guess').press('Enter')
+              assert page.locator('#progress-number').inner_text()=='1 / 1'
+              assert page.evaluate('FiftyQuiz.snapshot().solvedAll.length === 1 && FiftyQuiz.snapshot().solvedPractice.length === 1')
+              passed('Personal practice contains only saved state and has separate progress')
+              page.reload(wait_until='networkidle')
+              assert page.evaluate('FiftyQuiz.snapshot().mode === "practice" && FiftyQuiz.snapshot().saved.includes("TX") && FiftyQuiz.snapshot().solvedPractice.includes("TX")')
+              passed('Practice list and both scores persist after reload')
+              page.screenshot(path=str(out/'mobile-practice.png'),full_page=True)
+              page.locator('#mode-all').click();page.locator('#northeast').click()
+              page.locator('#state-MA').dispatch_event('click',{'detail':0})
+              page.locator('#guess').fill('Masaschussets');page.locator('#guess').press('Enter')
+              assert page.evaluate('FiftyQuiz.snapshot().solvedAll.includes("MA")')
+              passed('Northeast zoom and Massachusetts spelling work')
               desktop=browser.new_page(viewport={'width':1366,'height':900})
-              desktop.goto(url,wait_until='networkidle',timeout=90000)
-              desktop.screenshot(path='proof/desktop.png',full_page=True)
-              print('BASIC_BROWSER_CHECK_PASSED')
+              desktop.goto(report['url'],wait_until='networkidle',timeout=90000)
+              desktop.screenshot(path=str(out/'desktop.png'),full_page=True)
+              states=desktop.evaluate('FiftyQuiz.states()')
+              for state in states:
+                  desktop.locator('#state-'+state['id']).dispatch_event('click',{'detail':0})
+                  desktop.locator('#guess').fill(state['name']);desktop.locator('#guess').press('Enter')
+                  assert desktop.evaluate('(id)=>FiftyQuiz.snapshot().solvedAll.includes(id)',state['id'])
+              assert desktop.locator('#progress-number').inner_text()=='50 / 50'
+              assert desktop.locator('#state-paths path.solved').count()==50
+              passed('Complete desktop round: 50 correct answers and 50 green states')
+              desktop.screenshot(path=str(out/'all-50-solved.png'),full_page=True)
+              assert not errors,errors
+              passed('No JavaScript errors during mobile gameplay')
               browser.close()
+          report['status']='success'
+          (out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('LIVE_GAME_VERIFIED',report['url'],flush=True)
           PY
-      - uses: actions/upload-artifact@v4
+      - name: Save test evidence in isolated branch
         if: always()
-        with:
-          name: fifty-live-browser-proof
-          path: proof/
+        run: |
+          if [ -d fifty-proof ]; then
+            git add fifty-proof
+            git diff --cached --quiet || git commit -m 'Add public browser-test proof for fifty quiz'
+            git push origin HEAD:fifty-usa-quiz
+          fi
