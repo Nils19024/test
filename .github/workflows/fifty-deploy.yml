@@ -1,29 +1,64 @@
-name: Fifty quiz deployment
+name: Fifty live browser verification
 on:
   push:
     branches: [fifty-usa-quiz]
     paths: ['fifty-quiz/**', '.github/workflows/fifty-deploy.yml']
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: fifty-quiz-deploy
   cancel-in-progress: false
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Check public hosting endpoints
+      - name: Install browser tester
         run: |
-          python3 - <<'PY'
-          import urllib.request, re
-          urls = ['https://nano-handsome-understanding--nilsschmidt3396.replit.app', 'https://raw.githack.com/', 'https://rawcdn.githack.com/Nils19024/test/f075c95a4ac1fe83a7bcc561784d8af4f7c420c5/index.html']
-          for url in urls:
-              try:
-                  r = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'}), timeout=40)
-                  text = r.read().decode('utf-8', errors='replace')
-                  print('CHECK', url, r.status, r.headers.get('Content-Type'), 'title', re.findall(r'<title[^>]*>(.*?)</title>', text, re.S), 'length', len(text), 'preview', text[:350])
-              except Exception as e:
-                  print('CHECK FAILED', url, str(e))
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Open and inspect published mobile quiz
+        run: |
+          mkdir -p proof
+          python - <<'PY'
+          import json, re
+          from playwright.sync_api import sync_playwright
+          url='https://nano-handsome-understanding--nilsschmidt3396.replit.app'
+          with sync_playwright() as p:
+              browser=p.chromium.launch()
+              context=browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True,device_scale_factor=2)
+              page=context.new_page()
+              errors=[]
+              page.on('pageerror',lambda e: errors.append(str(e)))
+              response=page.goto(url,wait_until='networkidle',timeout=90000)
+              page.wait_for_timeout(3000)
+              print('LIVE_STATUS',response.status,'URL',page.url,'TITLE',page.title())
+              print('MOBILE_TEXT',page.locator('body').inner_text()[:12000])
+              print('BUTTONS',json.dumps(page.locator('button').evaluate_all('(es)=>es.map(e=>({text:e.innerText,id:e.id,test:e.dataset.testid,aria:e.getAttribute("aria-label")}))'),ensure_ascii=False))
+              print('INPUTS',page.locator('input').evaluate_all('(es)=>es.map(e=>({id:e.id,placeholder:e.placeholder,test:e.dataset.testid}))'))
+              print('PATH_COUNT',page.locator('path').count())
+              print('PATH_ATTRS',json.dumps(page.locator('path').evaluate_all('(es)=>es.filter(e=>(e.getAttribute("d")||"").length>100).slice(0,55).map(e=>({attrs:[...e.attributes].filter(a=>a.name!=="d").map(a=>[a.name,a.value]),box:(()=>{const b=e.getBoundingClientRect();return {x:b.x,y:b.y,w:b.width,h:b.height}})()}))'),ensure_ascii=False))
+              page.screenshot(path='proof/mobile-initial.png',full_page=True)
+              random=page.get_by_role('button',name=re.compile('Zufall|Zufäll',re.I))
+              if random.count():
+                  random.first.click()
+                  page.wait_for_timeout(700)
+                  print('AFTER_RANDOM',page.locator('body').inner_text()[:8000])
+                  print('AFTER_RANDOM_INPUTS',page.locator('input').evaluate_all('(es)=>es.map(e=>({id:e.id,placeholder:e.placeholder,test:e.dataset.testid}))'))
+                  page.screenshot(path='proof/mobile-selected.png',full_page=True)
+              print('PAGE_ERRORS',errors)
+              assert response.status==200
+              assert page.locator('path').count()>=50
+              assert not errors
+              assert "This app isn't live yet" not in page.locator('body').inner_text()
+              desktop=browser.new_page(viewport={'width':1366,'height':900})
+              desktop.goto(url,wait_until='networkidle',timeout=90000)
+              desktop.screenshot(path='proof/desktop.png',full_page=True)
+              print('BASIC_BROWSER_CHECK_PASSED')
+              browser.close()
           PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fifty-live-browser-proof
+          path: proof/
